@@ -74,6 +74,33 @@ class SampleItem:
         # only for models that support it, (qwen image edit 2509 for now)
         self.do_cfg_norm: bool = kwargs.get('do_cfg_norm', False)
 
+class SampleModelConfig:
+    """
+    Configuration for a separate model used during sampling.
+    This allows using a different model (e.g., Z-Image-Turbo) for sampling
+    while training a LoRA on another model (e.g., Z-Image).
+    """
+    def __init__(self, **kwargs):
+        self.name_or_path: str = kwargs.get('name_or_path', None)
+        self.arch: str = kwargs.get('arch', None)
+        self.dtype: str = kwargs.get('dtype', 'bf16')
+        self.quantize: bool = kwargs.get('quantize', False)
+        self.qtype: str = kwargs.get('qtype', 'qfloat8')
+        self.quantize_te: bool = kwargs.get('quantize_te', False)
+        self.qtype_te: str = kwargs.get('qtype_te', 'qfloat8')
+        self.low_vram: bool = kwargs.get('low_vram', False)
+        self.layer_offloading: bool = kwargs.get('layer_offloading', False)
+        self.layer_offloading_transformer_percent: float = kwargs.get('layer_offloading_transformer_percent', 1.0)
+        self.layer_offloading_text_encoder_percent: float = kwargs.get('layer_offloading_text_encoder_percent', 1.0)
+        self.assistant_lora_path: str = kwargs.get('assistant_lora_path', None)
+        self.extras_name_or_path: str = kwargs.get('extras_name_or_path', self.name_or_path)
+
+        if self.name_or_path is None:
+            raise ValueError('name_or_path must be specified for sample model')
+        if self.arch is None:
+            raise ValueError('arch must be specified for sample model')
+
+
 class SampleConfig:
     def __init__(self, **kwargs):
         self.sampler: str = kwargs.get('sampler', 'ddpm')
@@ -97,9 +124,9 @@ class SampleConfig:
         if self.num_frames > 1 and self.ext not in ['webp']:
             print("Changing sample extention to animated webp")
             self.ext = 'webp'
-        
+
         prompts: list[str] = kwargs.get('prompts', [])
-        
+
         self.samples: Optional[List[SampleItem]] = None
         # use the legacy prompts if it is passed that way to get samples object
         default_samples_kwargs = [
@@ -109,6 +136,12 @@ class SampleConfig:
         self.samples = [SampleItem(self, **item) for item in raw_samples]
         # only for models that support it, (qwen image edit 2509 for now)
         self.do_cfg_norm: bool = kwargs.get('do_cfg_norm', False)
+
+        # Separate model for sampling (e.g., use Z-Image-Turbo for sampling while training Z-Image LoRA)
+        model_config = kwargs.get('model', None)
+        self.model: Optional[SampleModelConfig] = None
+        if model_config is not None:
+            self.model = SampleModelConfig(**model_config)
         
     @property
     def prompts(self):

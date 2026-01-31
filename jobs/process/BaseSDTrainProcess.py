@@ -58,7 +58,7 @@ import gc
 
 from tqdm import tqdm
 
-from toolkit.config_modules import SaveConfig, LoggingConfig, SampleConfig, NetworkConfig, TrainConfig, ModelConfig, \
+from toolkit.config_modules import SaveConfig, LoggingConfig, SampleConfig, SampleModelConfig, NetworkConfig, TrainConfig, ModelConfig, \
     GenerateImageConfig, EmbeddingConfig, DatasetConfig, preprocess_dataset_raw_config, AdapterConfig, GuidanceConfig, validate_configs, \
     DecoratorConfig
 from toolkit.logging_aitk import create_logger
@@ -269,6 +269,116 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # override in subclass
         return generate_image_config_list
 
+    def _create_sample_model(self, sample_model_config: SampleModelConfig):
+        """
+        Create a separate model instance for sampling.
+        This allows using a different model (e.g., Z-Image-Turbo) for sampling
+        while training a LoRA on another model (e.g., Z-Image).
+        """
+        # Create a ModelConfig from SampleModelConfig
+        model_config = ModelConfig(
+            name_or_path=sample_model_config.name_or_path,
+            arch=sample_model_config.arch,
+            dtype=sample_model_config.dtype,
+            quantize=sample_model_config.quantize,
+            qtype=sample_model_config.qtype,
+            quantize_te=sample_model_config.quantize_te,
+            qtype_te=sample_model_config.qtype_te,
+            low_vram=sample_model_config.low_vram,
+            layer_offloading=sample_model_config.layer_offloading,
+            layer_offloading_transformer_percent=sample_model_config.layer_offloading_transformer_percent,
+            layer_offloading_text_encoder_percent=sample_model_config.layer_offloading_text_encoder_percent,
+            assistant_lora_path=sample_model_config.assistant_lora_path,
+            extras_name_or_path=sample_model_config.extras_name_or_path,
+        )
+
+        # Get the model class based on architecture
+        ModelClass = get_model_class(model_config)
+
+        # Get the scheduler for this model
+        if hasattr(ModelClass, 'get_train_scheduler'):
+            sampler = ModelClass.get_train_scheduler()
+        else:
+            sampler = None
+
+        # Create the model instance
+        sample_sd = ModelClass(
+            device=self.accelerator.device,
+            model_config=model_config,
+            dtype=sample_model_config.dtype,
+            custom_pipeline=None,
+            noise_scheduler=sampler,
+        )
+
+        # Load the model
+        sample_sd.load_model()
+
+        return sample_sd
+
+    def _apply_network_to_sample_model(self, sample_sd):
+        """
+        Apply the current training network (LoRA) to a separate sample model.
+        Returns the created network for the sample model.
+        """
+        if self.network is None:
+            return None
+
+        # Get the network class
+        from toolkit.lora_special import LoRASpecialNetwork
+        from toolkit.lycoris_special import LycorisSpecialNetwork
+
+        # Determine network type
+        is_lycoris = self.network_config.type.lower() in ['locon', 'lokr', 'loha', 'full', 'ia3']
+        NetworkClass = LycorisSpecialNetwork if is_lycoris else LoRASpecialNetwork
+
+        # Get text encoder from sample model
+        text_encoder = sample_sd.text_encoder
+        if isinstance(text_encoder, list):
+            text_encoder_for_network = text_encoder[0] if len(text_encoder) == 1 else text_encoder
+        else:
+            text_encoder_for_network = text_encoder
+
+        # Prepare network kwargs
+        network_kwargs = {}
+        if hasattr(sample_sd, 'target_lora_modules'):
+            network_kwargs['target_lin_modules'] = sample_sd.target_lora_modules
+
+        # Create the network for sample model
+        sample_network = NetworkClass(
+            text_encoder=text_encoder_for_network,
+            unet=sample_sd.get_model_to_train(),
+            lora_dim=self.network_config.linear,
+            multiplier=1.0,
+            alpha=self.network_config.linear_alpha,
+            train_unet=self.train_config.train_unet,
+            train_text_encoder=self.train_config.train_text_encoder,
+            network_config=self.network_config,
+            network_type=self.network_config.type,
+            transformer_only=self.network_config.transformer_only,
+            is_transformer=sample_sd.is_transformer if hasattr(sample_sd, 'is_transformer') else False,
+            **network_kwargs
+        )
+
+        # Apply the network to sample model
+        sample_network.apply_to(
+            text_encoder_for_network,
+            sample_sd.get_model_to_train(),
+            apply_text_encoder=self.train_config.train_text_encoder,
+            apply_unet=True
+        )
+
+        # Copy weights from training network to sample network
+        sample_network.load_state_dict(self.network.state_dict())
+
+        # Move to device
+        sample_network.force_to(self.device_torch, dtype=torch.float32)
+        sample_network._update_torch_multiplier()
+
+        # Attach network to sample model
+        sample_sd.network = sample_network
+
+        return sample_network
+
     def sample(self, step=None, is_first=False):
         if not self.accelerator.is_main_process:
             return
@@ -363,9 +473,33 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # let adapter know we are sampling
         if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
             self.adapter.is_sampling = True
-        
-        # send to be generated
-        self.sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
+
+        # Check if we have a separate model for sampling
+        sample_sd = None
+        sample_network = None
+        if sample_config.model is not None:
+            print_acc(f"Loading separate sample model: {sample_config.model.name_or_path}")
+            try:
+                # Create the sample model
+                sample_sd = self._create_sample_model(sample_config.model)
+
+                # Apply the training network to the sample model
+                sample_network = self._apply_network_to_sample_model(sample_sd)
+
+                # Generate images with the sample model
+                sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
+            finally:
+                # Clean up the sample model to free memory
+                if sample_sd is not None:
+                    print_acc("Cleaning up sample model")
+                    if sample_network is not None:
+                        sample_network.restore()
+                        del sample_network
+                    del sample_sd
+                    flush()
+        else:
+            # Use the training model for sampling
+            self.sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
 
         
         if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
