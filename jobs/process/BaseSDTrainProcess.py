@@ -318,6 +318,19 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # Load the model
         sample_sd.load_model()
 
+        # If we have cached sample prompts, move text encoder to CPU to save VRAM
+        # since it won't be used for encoding
+        if self.sd.sample_prompts_cache is not None:
+            print_acc("Moving sample model text encoder to CPU (using cached embeddings)")
+            if hasattr(sample_sd, 'text_encoder') and sample_sd.text_encoder is not None:
+                if isinstance(sample_sd.text_encoder, list):
+                    for te in sample_sd.text_encoder:
+                        if te is not None:
+                            te.to('cpu')
+                else:
+                    sample_sd.text_encoder.to('cpu')
+                flush()
+
         return sample_sd
 
     def _apply_network_to_sample_model(self, sample_sd):
@@ -383,6 +396,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         # Attach network to sample model
         sample_sd.network = sample_network
+
+        # Copy cached sample prompts from training model to avoid using text encoder
+        if self.sd.sample_prompts_cache is not None:
+            sample_sd.sample_prompts_cache = self.sd.sample_prompts_cache
 
         return sample_network
 
