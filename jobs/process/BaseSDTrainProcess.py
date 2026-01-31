@@ -497,6 +497,11 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     sample_sd = self._cached_sample_sd
                     sample_network = self._cached_sample_network
 
+                    # Move sample model back to GPU if it was on CPU
+                    if not keep_loaded:
+                        print_acc("Moving sample model to GPU")
+                        sample_sd.set_device_state_preset('generate')
+
                     # Update network weights from training network
                     if sample_network is not None and self.network is not None:
                         sample_network.load_state_dict(self.network.state_dict())
@@ -504,33 +509,32 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
                     # Generate images with the cached sample model
                     sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
+
+                    # Move sample model to CPU after sampling if not keep_loaded
+                    if not keep_loaded:
+                        print_acc("Moving sample model to CPU")
+                        sample_sd.set_device_state_preset('unload')
                 else:
                     print_acc(f"Loading separate sample model: {sample_config.model.name_or_path}")
-                    try:
-                        # Create the sample model
-                        sample_sd = self._create_sample_model(sample_config.model)
+                    # Create the sample model
+                    sample_sd = self._create_sample_model(sample_config.model)
 
-                        # Apply the training network to the sample model
-                        sample_network = self._apply_network_to_sample_model(sample_sd)
+                    # Apply the training network to the sample model
+                    sample_network = self._apply_network_to_sample_model(sample_sd)
 
-                        # Generate images with the sample model
-                        sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
+                    # Generate images with the sample model
+                    sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
 
-                        # Cache the model if keep_loaded is True
-                        if keep_loaded:
-                            print_acc("Keeping sample model loaded in VRAM for reuse")
-                            self._cached_sample_sd = sample_sd
-                            self._cached_sample_network = sample_network
-                    finally:
-                        # Clean up the sample model to free memory (only if not keeping loaded)
-                        if not keep_loaded:
-                            if sample_sd is not None:
-                                print_acc("Cleaning up sample model")
-                                if sample_network is not None:
-                                    sample_network.restore()
-                                    del sample_network
-                                del sample_sd
-                                flush()
+                    # Always cache the sample model for reuse
+                    self._cached_sample_sd = sample_sd
+                    self._cached_sample_network = sample_network
+
+                    # Move sample model to CPU after sampling if not keep_loaded
+                    if not keep_loaded:
+                        print_acc("Moving sample model to CPU")
+                        sample_sd.set_device_state_preset('unload')
+                    else:
+                        print_acc("Keeping sample model in VRAM")
             finally:
                 # Reload training model back to GPU if it was unloaded
                 if unload_training_model:
