@@ -96,6 +96,8 @@ class SampleModelConfig:
         self.extras_name_or_path: str = kwargs.get('extras_name_or_path', self.name_or_path)
         # If True, keep the sample model loaded in VRAM for faster subsequent sampling
         self.keep_loaded: bool = kwargs.get('keep_loaded', False)
+        # If True, unload the training model to CPU before loading the sample model to free VRAM
+        self.unload_training_model: bool = kwargs.get('unload_training_model', False)
 
         if self.name_or_path is None:
             raise ValueError('name_or_path must be specified for sample model')

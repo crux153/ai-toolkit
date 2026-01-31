@@ -482,47 +482,60 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # Check if we have a separate model for sampling
         if sample_config.model is not None:
             keep_loaded = sample_config.model.keep_loaded
+            unload_training_model = sample_config.model.unload_training_model
 
-            # Check if we have a cached sample model
-            if self._cached_sample_sd is not None:
-                print_acc("Using cached sample model")
-                sample_sd = self._cached_sample_sd
-                sample_network = self._cached_sample_network
+            # Unload training model to CPU if requested to free VRAM
+            if unload_training_model:
+                print_acc("Unloading training model to CPU to free VRAM")
+                self.sd.save_device_state()
+                self.sd.set_device_state_preset('unload')
 
-                # Update network weights from training network
-                if sample_network is not None and self.network is not None:
-                    sample_network.load_state_dict(self.network.state_dict())
-                    sample_network._update_torch_multiplier()
+            try:
+                # Check if we have a cached sample model
+                if self._cached_sample_sd is not None:
+                    print_acc("Using cached sample model")
+                    sample_sd = self._cached_sample_sd
+                    sample_network = self._cached_sample_network
 
-                # Generate images with the cached sample model
-                sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
-            else:
-                print_acc(f"Loading separate sample model: {sample_config.model.name_or_path}")
-                try:
-                    # Create the sample model
-                    sample_sd = self._create_sample_model(sample_config.model)
+                    # Update network weights from training network
+                    if sample_network is not None and self.network is not None:
+                        sample_network.load_state_dict(self.network.state_dict())
+                        sample_network._update_torch_multiplier()
 
-                    # Apply the training network to the sample model
-                    sample_network = self._apply_network_to_sample_model(sample_sd)
-
-                    # Generate images with the sample model
+                    # Generate images with the cached sample model
                     sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
+                else:
+                    print_acc(f"Loading separate sample model: {sample_config.model.name_or_path}")
+                    try:
+                        # Create the sample model
+                        sample_sd = self._create_sample_model(sample_config.model)
 
-                    # Cache the model if keep_loaded is True
-                    if keep_loaded:
-                        print_acc("Keeping sample model loaded in VRAM for reuse")
-                        self._cached_sample_sd = sample_sd
-                        self._cached_sample_network = sample_network
-                finally:
-                    # Clean up the sample model to free memory (only if not keeping loaded)
-                    if not keep_loaded:
-                        if sample_sd is not None:
-                            print_acc("Cleaning up sample model")
-                            if sample_network is not None:
-                                sample_network.restore()
-                                del sample_network
-                            del sample_sd
-                            flush()
+                        # Apply the training network to the sample model
+                        sample_network = self._apply_network_to_sample_model(sample_sd)
+
+                        # Generate images with the sample model
+                        sample_sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
+
+                        # Cache the model if keep_loaded is True
+                        if keep_loaded:
+                            print_acc("Keeping sample model loaded in VRAM for reuse")
+                            self._cached_sample_sd = sample_sd
+                            self._cached_sample_network = sample_network
+                    finally:
+                        # Clean up the sample model to free memory (only if not keeping loaded)
+                        if not keep_loaded:
+                            if sample_sd is not None:
+                                print_acc("Cleaning up sample model")
+                                if sample_network is not None:
+                                    sample_network.restore()
+                                    del sample_network
+                                del sample_sd
+                                flush()
+            finally:
+                # Reload training model back to GPU if it was unloaded
+                if unload_training_model:
+                    print_acc("Reloading training model to GPU")
+                    self.sd.restore_device_state()
         else:
             # Use the training model for sampling
             self.sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
