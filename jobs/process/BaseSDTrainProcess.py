@@ -373,7 +373,9 @@ class BaseSDTrainProcess(BaseTrainProcess):
         )
 
         # Copy weights from training network to sample network
-        sample_network.load_state_dict(self.network.state_dict())
+        # Use strict=False because sample model may have different architecture
+        # (e.g., Z-Image-Turbo has additional layers that Z-Image doesn't have)
+        sample_network.load_state_dict(self.network.state_dict(), strict=False)
 
         # Move to device
         sample_network.force_to(self.device_torch, dtype=torch.float32)
@@ -504,7 +506,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
                     # Update network weights from training network
                     if sample_network is not None and self.network is not None:
-                        sample_network.load_state_dict(self.network.state_dict())
+                        sample_network.load_state_dict(self.network.state_dict(), strict=False)
                         sample_network._update_torch_multiplier()
 
                     # Generate images with the cached sample model
