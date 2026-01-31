@@ -94,6 +94,8 @@ class SampleModelConfig:
         self.layer_offloading_text_encoder_percent: float = kwargs.get('layer_offloading_text_encoder_percent', 1.0)
         self.assistant_lora_path: str = kwargs.get('assistant_lora_path', None)
         self.extras_name_or_path: str = kwargs.get('extras_name_or_path', self.name_or_path)
+        # If True, keep the sample model loaded in VRAM for faster subsequent sampling
+        self.keep_loaded: bool = kwargs.get('keep_loaded', False)
 
         if self.name_or_path is None:
             raise ValueError('name_or_path must be specified for sample model')
